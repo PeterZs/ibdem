@@ -4,7 +4,13 @@
       "Bash(python -c \"import pypdf; r = pypdf.PdfReader\\('C:/Users/nobuo/Documents/github/nnkgw/ibdem/3711852.pdf'\\); print\\(f'Pages: {len\\(r.pages\\)}'\\); [print\\(r.pages[i].extract_text\\(\\)\\) for i in range\\(min\\(5,len\\(r.pages\\)\\)\\)]\" 2>&1)",
       "Bash(python -c \"import pdfplumber; pdf = pdfplumber.open\\('C:/Users/nobuo/Documents/github/nnkgw/ibdem/3711852.pdf'\\); [print\\(p.extract_text\\(\\)\\) for p in pdf.pages[:5]]\" 2>&1 || python -c \"import PyPDF2; r = PyPDF2.PdfReader\\('C:/Users/nobuo/Documents/github/nnkgw/ibdem/3711852.pdf'\\); print\\(f'Pages: {len\\(r.pages\\)}'\\); [print\\(r.pages[i].extract_text\\(\\)\\) for i in range\\(min\\(5,len\\(r.pages\\)\\)\\)]\" 2>&1)",
       "Bash(pip install:*)",
-      "Bash(python -c \"\nimport fitz\ndoc = fitz.open\\('C:/Users/nobuo/Documents/github/nnkgw/ibdem/3711852.pdf'\\)\nprint\\(f'Total pages: {len\\(doc\\)}'\\)\nfor i in range\\(len\\(doc\\)\\):\n    text = doc[i].get_text\\(\\)\n    print\\(f'=== PAGE {i+1} ==='\\)\n    print\\(text[:2000]\\)\n    print\\(\\)\n\" 2>&1 | head -300)"
+      "Bash(python -c \"\nimport fitz\ndoc = fitz.open\\('C:/Users/nobuo/Documents/github/nnkgw/ibdem/3711852.pdf'\\)\nprint\\(f'Total pages: {len\\(doc\\)}'\\)\nfor i in range\\(len\\(doc\\)\\):\n    text = doc[i].get_text\\(\\)\n    print\\(f'=== PAGE {i+1} ==='\\)\n    print\\(text[:2000]\\)\n    print\\(\\)\n\" 2>&1 | head -300)",
+      "Bash(cd C:/Users/nobuo/Documents/github/nnkgw/ibdem && cmake -B build -S . 2>&1)",
+      "Bash(cd C:/Users/nobuo/Documents/github/nnkgw/ibdem && cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake 2>&1)",
+      "Bash(cmake -B C:/Users/nobuo/Documents/github/nnkgw/ibdem/build2 -S C:/Users/nobuo/Documents/github/nnkgw/ibdem -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake --debug-find-pkg=glm 2>&1 | grep -i \"glm\\\\|found\\\\|FOUND\\\\|config\\\\|Config\" | head -30)",
+      "Bash(cd C:/Users/nobuo/Documents/github/nnkgw/ibdem && rm -rf build && cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake 2>&1)",
+      "Bash(cd C:/Users/nobuo/Documents/github/nnkgw/ibdem && cmake --build build --config Release 2>&1)",
+      "Bash(cd C:/Users/nobuo/Documents/github/nnkgw/ibdem/build/Release && timeout 8 ./ibdem.exe 2>&1 || echo \"exit code: $?\")"
     ]
   }
 }
