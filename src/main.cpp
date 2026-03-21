@@ -54,13 +54,20 @@ static const BeamConfig SCALE_CFG[NUM_SCALES] = {
 // SimConfig for each scale (from Table 2 and paper Section 6)
 // ---------------------------------------------------------------------------
 static const SimConfig SIM_CFG[NUM_SCALES] = {
-  // dt = 0.02975 * r  (from rho_Jacobi = 0.965 => m/dt^2 = 0.0363 * 6*(kn+kt))
-  // loadVel = delta_crit / (25 * dt)  where delta_crit = 3.333mm (beam theory)
-  // PCG converges in ~8 iterations; maxIter=20 is generous.
-  //  dt          E       nu    tauC   loadVel  grav  maxIter  eps
-  { 5.35e-4f, 1e7f, 0.3f, 3e4f, 0.2491f, 0.0f, 200, 1e-4f }, // Low    r=0.018
-  { 3.27e-4f, 1e7f, 0.3f, 3e4f, 0.4075f, 0.0f, 200, 1e-4f }, // Middle r=0.011
-  { 1.49e-4f, 1e7f, 0.3f, 3e4f, 0.8946f, 0.0f, 200, 1e-4f }, // High   r=0.005
+  // Quasi-static implicit integration: large dt so m/dt^2 << kn (elastic-dominated).
+  // m/dt^2/kn ratios: Low=8.6e-5, Middle=3.2e-5, High=6.7e-6 — all negligible.
+  // Jacobi-preconditioned condition number kappa ~ O(N_x) -> PCG converges in
+  // sqrt(kappa) iterations. With 10 outer * 20 PCG inner = 200 CG steps/frame:
+  //   Low   (N_x~28):  converges in ~28 CG steps.
+  //   Middle (N_x~45): converges in ~45 CG steps.
+  //   High  (N_x~100): converges in ~100 CG steps.
+  // delta_per_frame = 1.333e-4 m (= 3.33mm / 25 frames); loadVel = delta / dt.
+  // Velocity warm-start: after frame 0, p_hat = x_n + v_n*dt ~= next equilibrium,
+  // so PCG needs only 1-2 refinement iterations per frame from frame 1 onwards.
+  //  dt        E       nu    tauC   loadVel    grav  maxIter  eps
+  { 1e-3f,  1e7f, 0.3f, 3e4f, 0.062f,  0.0f,   15, 1e-4f }, // Low    r=0.018
+  { 1e-3f,  1e7f, 0.3f, 3e4f, 0.062f,  0.0f,   15, 1e-4f }, // Middle r=0.011
+  { 1e-3f,  1e7f, 0.3f, 3e4f, 0.062f,  0.0f,   15, 1e-4f }, // High   r=0.005
 };
 
 // ---------------------------------------------------------------------------

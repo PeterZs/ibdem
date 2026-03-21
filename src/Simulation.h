@@ -36,9 +36,9 @@ public:
   // Compute total potential energy of all active bonds
   float totalEnergy() const;
 
-  // Apply one gradient descent step on SO(3) x R^3 manifold.
-  // alpha: step size multiplier
-  void gradientStep(float alpha);
+  // Apply one preconditioned gradient step on SO(3) x R^3 manifold.
+  // alpha: step size multiplier.  update_pos: also update positions (default true).
+  void gradientStep(float alpha, bool update_pos = true);
 
   // PCG solver for position DOFs (rotations updated by Jacobi afterwards).
   // Uses analytical stretch-only Hessian-vector product.

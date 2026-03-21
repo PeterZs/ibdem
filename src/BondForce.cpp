@@ -130,18 +130,20 @@ static float stretchEnergy(const Particle& pi, const Particle& pj,
 
 // ---------------------------------------------------------------------------
 // Shear energy (Eq. 9 in paper)
-// Penalises mismatch between the current bond direction and the expected
-// direction obtained by rotating d0 with the mean particle orientation qc.
-// V_shear = (1/2) kt theta^2  where theta = angle(d_current, R(qc)*d0).
-// This formulation COUPLES positions to orientations, which is required for
-// the rotational DOFs to evolve as the beam bends.
+// V_shear = (1/2) kt l0^2 theta^2
+// theta = angle(d_actual, qc⊙d0)
+// d_actual = (pj - pi) / |pj - pi|  is the CURRENT physical bond direction.
+// qc = (qi+qj)/||qi+qj|| is the mean orientation.
+// d_exp = qc⊙d0 is the "expected direction" tracked by the mean orientation.
+// Shear energy is zero when orientations correctly predict the bond direction.
+// This creates position-orientation coupling: bending positions drive orientations.
 // ---------------------------------------------------------------------------
 static float shearEnergy(const Particle& pi, const Particle& pj,
                           const Bond& b, float kt) {
-  glm::vec3 d_bond = pj.pos - pi.pos;
-  float dist_bond  = glm::length(d_bond);
-  if (dist_bond < 1e-12f) return 0.0f;
-  glm::vec3 d_cur = d_bond / dist_bond;  // current bond direction (position-dependent)
+  glm::vec3 dv   = pj.pos - pi.pos;
+  float     dist = glm::length(dv);
+  if (dist < 1e-12f) return 0.0f;
+  glm::vec3 d_actual = dv / dist;
 
   glm::vec4 qi_vec(pi.rot.x, pi.rot.y, pi.rot.z, pi.rot.w);
   glm::vec4 qj_vec(pj.rot.x, pj.rot.y, pj.rot.z, pj.rot.w);
@@ -151,11 +153,10 @@ static float shearEnergy(const Particle& pi, const Particle& pj,
   glm::quat qc(s_sum.w / norm_s, s_sum.x / norm_s,
                s_sum.y / norm_s, s_sum.z / norm_s);
 
-  // Expected direction from mean orientation
+  // d_exp = qc⊙d0; theta = angle(d_actual, d_exp)
   glm::vec3 d_exp    = rotVec(qc, b.d0);
-  float cos_theta    = glm::clamp(glm::dot(d_cur, d_exp), -1.0f, 1.0f);
+  float cos_theta    = glm::clamp(glm::dot(d_actual, d_exp), -1.0f, 1.0f);
   float theta        = std::acos(cos_theta);
-  // Shear displacement delta_s = l0 * theta; energy = 0.5*kt*delta_s^2 = 0.5*kt*l0^2*theta^2
   return 0.5f * kt * b.l0 * b.l0 * theta * theta;
 }
 
@@ -213,70 +214,63 @@ BondGradient bondGradient(const Particle& pi, const Particle& pj,
   }
 
   // ---- Shear gradient ----
-  // V_shear = (1/2)*kt*theta^2, theta = angle(d_cur, R(qc)*d0)
-  // d_cur = normalize(pj - pi)  -- couples positions to orientations.
-  {
-    glm::vec3 d_bond   = pj.pos - pi.pos;
-    float     dist_b   = glm::length(d_bond);
-    if (dist_b > 1e-12f) {
-      glm::vec3 d_cur  = d_bond / dist_b;
+  // V_shear = (1/2)*kt*l0^2*theta^2, theta = angle(d_actual, qc⊙d0)   [Paper Eq. 9]
+  // d_actual = (pj-pi)/|pj-pi| is the current physical bond direction.
+  // Gradient w.r.t. positions (transverse shear force) AND orientations.
+  if (dist > 1e-12f) {
+    glm::vec3 d_actual = d / dist;  // d = pj - pi computed above
 
-      glm::vec4 qi_vec(pi.rot.x, pi.rot.y, pi.rot.z, pi.rot.w);
-      glm::vec4 qj_vec(pj.rot.x, pj.rot.y, pj.rot.z, pj.rot.w);
-      glm::vec4 s_sum  = qi_vec + qj_vec;
-      float     norm_s = glm::length(s_sum);
-      if (norm_s > 1e-12f) {
-        glm::quat qc(s_sum.w / norm_s, s_sum.x / norm_s,
-                     s_sum.y / norm_s, s_sum.z / norm_s);
-        glm::vec3 d_exp    = rotVec(qc, b.d0);
-        float cos_theta    = glm::clamp(glm::dot(d_cur, d_exp), -1.0f, 1.0f);
-        float theta        = std::acos(cos_theta);
-        float sin_theta    = std::sin(theta);
+    glm::vec4 qi_vec(pi.rot.x, pi.rot.y, pi.rot.z, pi.rot.w);
+    glm::vec4 qj_vec(pj.rot.x, pj.rot.y, pj.rot.z, pj.rot.w);
+    glm::vec4 s_sum  = qi_vec + qj_vec;
+    float     norm_s = glm::length(s_sum);
+    if (norm_s > 1e-12f) {
+      glm::quat qc(s_sum.w / norm_s, s_sum.x / norm_s,
+                   s_sum.y / norm_s, s_sum.z / norm_s);
+      glm::vec3 d_exp    = rotVec(qc, b.d0);
+      float cos_theta    = glm::clamp(glm::dot(d_actual, d_exp), -1.0f, 1.0f);
+      float theta        = std::acos(cos_theta);
+      float sin_theta    = std::sin(theta);
 
-        if (sin_theta > 1e-6f) {
-          // factor includes l0^2 because shear energy = 0.5*kt*l0^2*theta^2
-          // (shear displacement delta_s = l0*theta, V = 0.5*kt*delta_s^2)
-          float factor = st.kt * b.l0 * b.l0 * theta / sin_theta;
+      if (sin_theta > 1e-6f) {
+        float factor = st.kt * b.l0 * b.l0 * theta / sin_theta;
 
-          // ---- Position gradient ----
-          // d(cos_theta)/d(pj) = (1/dist) * (d_exp - cos_theta*d_cur)
-          // dV/dpj = -factor/dist * (d_exp - cos_theta*d_cur)
-          // dV/dpi = +factor/dist * (d_exp - cos_theta*d_cur)
-          glm::vec3 shear_f = (factor / dist_b) * (d_exp - cos_theta * d_cur);
-          bg.grad_pi += shear_f;
-          bg.grad_pj -= shear_f;
+        // ---- Position gradient ----
+        // dV/d(pj) = factor * (-1/sin_theta) * d(d_actual . d_exp)/d(pj)
+        // d(d_actual)/d(pj) = (I - d_actual x d_actual) / dist
+        // => dV/d(pj) = -factor * (d_exp - cos_theta * d_actual) / dist
+        glm::vec3 transverse = d_exp - cos_theta * d_actual;
+        bg.grad_pj += -factor * transverse / dist;
+        bg.grad_pi +=  factor * transverse / dist;
 
-          // ---- Orientation gradient ----
-          // d(cos_theta)/d(qc) where cos_theta = dot(d_cur, R(qc)*d0).
-          // Using d/dq [v^T R(q) u] with v=d_cur, u=d0, t3=qc.xyz, s=qc.w:
-          //   vector part: -2(v.u)t3 + 2(t3.v)u + 2(t3.u)v + 2s*(u x v)
-          //   scalar part: 2s*(v.u) + 2*t3.(u x v)
-          glm::vec3 t3(qc.x, qc.y, qc.z);
-          float s_qc   = qc.w;
-          float vdotu  = glm::dot(d_cur, b.d0);
-          float tdotv  = glm::dot(t3, d_cur);
-          float tdotu  = glm::dot(t3, b.d0);
-          glm::vec3 ucv = glm::cross(b.d0, d_cur);  // u x v = d0 x d_cur
+        // ---- Orientation gradient ----
+        // d(cos_theta)/d(qc) where cos_theta = dot(d_actual, R(qc)*d0).
+        // Using d/dq [v^T R(q) u] with v = d_actual, u = d0:
+        //   vector part: 2(v.t3)u + 2(t3.u)v - 2(v.u)t3 + 2s(u x v)
+        //   scalar part: 2s(v.u) + 2t3.(u x v)
+        glm::vec3 t3(qc.x, qc.y, qc.z);
+        float s_qc   = qc.w;
+        glm::vec3 uxv    = glm::cross(b.d0, d_actual);  // d0 x d_actual
+        float tdotu0     = glm::dot(t3, b.d0);
+        float vdotu0     = glm::dot(d_actual, b.d0);
 
-          glm::vec3 dcos_dt3 = -2.0f * vdotu * t3
-                               + 2.0f * tdotv * b.d0
-                               + 2.0f * tdotu * d_cur
-                               + 2.0f * s_qc  * ucv;
-          float dcos_ds = 2.0f * s_qc * vdotu + 2.0f * glm::dot(t3, ucv);
+        glm::vec3 dcos_dt3 = 2.0f * glm::dot(d_actual, t3) * b.d0
+                           + 2.0f * tdotu0 * d_actual
+                           - 2.0f * vdotu0 * t3
+                           + 2.0f * s_qc * uxv;
+        float dcos_ds = 2.0f * s_qc * vdotu0 + 2.0f * glm::dot(t3, uxv);
 
-          // dV/dqc = -factor * dcos/dqc
-          glm::vec4 dcos_dqc(dcos_dt3.x, dcos_dt3.y, dcos_dt3.z, dcos_ds);
-          glm::vec4 dV_dqc = -factor * dcos_dqc;
+        glm::vec4 dcos_dqc(dcos_dt3.x, dcos_dt3.y, dcos_dt3.z, dcos_ds);
+        glm::vec4 dV_dqc = -factor * dcos_dqc;
 
-          // Project onto tangent space of S3 at qc
-          glm::vec4 qc_vec(qc.x, qc.y, qc.z, qc.w);
-          glm::vec4 dV_proj = dV_dqc - glm::dot(qc_vec, dV_dqc) * qc_vec;
+        // Project onto tangent space of S3 at qc
+        glm::vec4 qc_vec(qc.x, qc.y, qc.z, qc.w);
+        glm::vec4 dV_proj = dV_dqc - glm::dot(qc_vec, dV_dqc) * qc_vec;
 
-          // Chain rule: dqc/dqi = dqc/dqj = (I - qc*qc^T)/norm_s
-          glm::vec4 grad_q_shear = dV_proj / norm_s;
-          bg.grad_qi += grad_q_shear;
-          bg.grad_qj += grad_q_shear;
-        }
+        // Chain rule: dqc/dqi = dqc/dqj = (I - qc*qc^T)/norm_s
+        glm::vec4 grad_q_shear = dV_proj / norm_s;
+        bg.grad_qi += grad_q_shear;
+        bg.grad_qj += grad_q_shear;
       }
     }
   }
@@ -338,28 +332,24 @@ void bondStress(const Particle& pi, const Particle& pj, const Bond& b,
   float Mt = std::abs(Kt[0]);                                          // torsion magnitude
   float Mb = std::sqrt(Kt[1] * Kt[1] + Kt[2] * Kt[2]);               // bending moment magnitude
 
-  // Shear force from shear energy (position gradient)
+  // Shear force: Fs = nabla_p V_shear (transverse component)
+  // theta = angle(d_actual, qc⊙d0); Fs = kt*l0^2*theta/sin(theta)*(d_exp - cos*d_actual)/dist
   glm::vec3 Fs(0.0f);
   {
-    float dist_b = glm::length(d);
-    if (dist_b > 1e-12f) {
-      glm::vec3 d_cur = d / dist_b;
-      glm::vec4 qi_vec(pi.rot.x, pi.rot.y, pi.rot.z, pi.rot.w);
-      glm::vec4 qj_vec(pj.rot.x, pj.rot.y, pj.rot.z, pj.rot.w);
-      glm::vec4 s_sum  = qi_vec + qj_vec;
-      float     norm_s = glm::length(s_sum);
-      if (norm_s > 1e-12f) {
-        glm::quat qc(s_sum.w / norm_s, s_sum.x / norm_s,
-                     s_sum.y / norm_s, s_sum.z / norm_s);
-        glm::vec3 d_exp    = rotVec(qc, b.d0);
-        float cos_theta    = glm::clamp(glm::dot(d_cur, d_exp), -1.0f, 1.0f);
-        float theta        = std::acos(cos_theta);
-        float sin_theta    = std::sin(theta);
-        if (sin_theta > 1e-6f) {
-          float factor = st.kt * b.l0 * b.l0 * theta / sin_theta;
-          // Fs = dV/dpj (force in direction that increases shear energy)
-          Fs = -(factor / dist_b) * (d_exp - cos_theta * d_cur);
-        }
+    glm::vec4 qi_vec_s(pi.rot.x, pi.rot.y, pi.rot.z, pi.rot.w);
+    glm::vec4 qj_vec_s(pj.rot.x, pj.rot.y, pj.rot.z, pj.rot.w);
+    glm::vec4 s_sum_s  = qi_vec_s + qj_vec_s;
+    float     ns = glm::length(s_sum_s);
+    if (ns > 1e-12f && dist > 1e-12f) {
+      glm::quat qcs(s_sum_s.w/ns, s_sum_s.x/ns, s_sum_s.y/ns, s_sum_s.z/ns);
+      glm::vec3 d_actual_s = (dist > 1e-12f) ? (d / dist) : glm::vec3(0.0f);
+      glm::vec3 d_exp_s = rotVec(qcs, b.d0);
+      float cth = glm::clamp(glm::dot(d_actual_s, d_exp_s), -1.0f, 1.0f);
+      float tth = std::acos(cth);
+      float sth = std::sin(tth);
+      if (sth > 1e-6f) {
+        float fac = st.kt * b.l0 * b.l0 * tth / sth;
+        Fs = fac * (d_exp_s - cth * d_actual_s) / dist;
       }
     }
   }

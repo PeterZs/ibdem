@@ -74,7 +74,7 @@ float Simulation::solvePCG(const std::vector<bool>& is_load,
   float dt = simCfg.dt;
   float pi_f = glm::pi<float>();
 
-  // ---- Diagonal preconditioner (same as Jacobi) ----
+  // ---- Diagonal preconditioner: stretch + shear transverse stiffness ----
   std::vector<float> h_p(N, 0.0f);
   for (int i = 0; i < N; i++) {
     if (particles[i].fixed || is_load[i]) continue;
@@ -87,8 +87,17 @@ float Simulation::solvePCG(const std::vector<bool>& is_load,
     float kn  = simCfg.E * S / b.l0;
     float G   = simCfg.E / (2.0f * (1.0f + simCfg.nu));
     float kt  = G * S / b.l0;
-    if (!particles[b.i].fixed && !is_load[b.i]) h_p[b.i] += kn + kt;
-    if (!particles[b.j].fixed && !is_load[b.j]) h_p[b.j] += kn + kt;
+    // Stretch diagonal contribution
+    if (!particles[b.i].fixed && !is_load[b.i]) h_p[b.i] += kn;
+    if (!particles[b.j].fixed && !is_load[b.j]) h_p[b.j] += kn;
+    // Shear transverse stiffness: kt * l0^2 / dist^2 (two transverse DOFs)
+    glm::vec3 dv = particles[b.j].pos - particles[b.i].pos;
+    float dist2 = glm::dot(dv, dv);
+    if (dist2 > 1e-20f) {
+      float ksh = kt * b.l0 * b.l0 / dist2;
+      if (!particles[b.i].fixed && !is_load[b.i]) h_p[b.i] += 2.0f * ksh;
+      if (!particles[b.j].fixed && !is_load[b.j]) h_p[b.j] += 2.0f * ksh;
+    }
   }
 
   // ---- Lambda: compute position gradient g = (m/dt^2)(p-p_hat) + bondGrad_p ----
@@ -108,8 +117,9 @@ float Simulation::solvePCG(const std::vector<bool>& is_load,
     }
   };
 
-  // ---- Lambda: Hessian-vector product Hd = (m/dt^2)d + K_stretch * d ----
-  // Uses analytical stretch stiffness: K_stretch[i,j] = -kn * dhat (x) dhat
+  // ---- Lambda: Hessian-vector product Hd = (m/dt^2)d + (K_stretch + K_shear) * d ----
+  // K_stretch[i,j] = -kn * dhat x dhat  (axial)
+  // K_shear[i,j]   = -kt*l0^2/dist^2 * (I - dhat x dhat)  (transverse)
   auto hessVec = [&](const std::vector<glm::vec3>& d_vec,
                      std::vector<glm::vec3>&       Hd_vec) {
     std::fill(Hd_vec.begin(), Hd_vec.end(), glm::vec3(0.0f));
@@ -129,17 +139,19 @@ float Simulation::solvePCG(const std::vector<bool>& is_load,
       float kn  = simCfg.E * S / b.l0;
       float G   = simCfg.E / (2.0f * (1.0f + simCfg.nu));
       float kt  = G * S / b.l0;
-      // Stretch: kn * dhat (x) dhat
+      float ksh = kt * b.l0 * b.l0 / (dist * dist);  // shear transverse stiffness
       glm::vec3 dvi = (particles[b.i].fixed || is_load[b.i]) ? glm::vec3(0.0f) : d_vec[b.i];
       glm::vec3 dvj = (particles[b.j].fixed || is_load[b.j]) ? glm::vec3(0.0f) : d_vec[b.j];
-      float proj_n = kn * glm::dot(dhat, dvj - dvi);
-      // Shear (transverse): kt * (I - dhat(x)dhat) treated as kt*I - kt*dhat(x)dhat
-      glm::vec3 proj_t_i = kt * (dvj - dvi) - kt * glm::dot(dhat, dvj - dvi) * dhat;
+      glm::vec3 dv_rel = dvj - dvi;
+      // Stretch: kn * dhat (x) dhat
+      float proj_n = kn * glm::dot(dhat, dv_rel);
+      // Shear: ksh * (I - dhat x dhat)  (transverse)
+      glm::vec3 proj_t = ksh * (dv_rel - glm::dot(dhat, dv_rel) * dhat);
       if (!particles[b.i].fixed && !is_load[b.i]) {
-        Hd_vec[b.i] -= proj_n * dhat + proj_t_i;
+        Hd_vec[b.i] -= proj_n * dhat + proj_t;
       }
       if (!particles[b.j].fixed && !is_load[b.j]) {
-        Hd_vec[b.j] += proj_n * dhat + proj_t_i;
+        Hd_vec[b.j] += proj_n * dhat + proj_t;
       }
     }
   };
@@ -215,21 +227,23 @@ float Simulation::solvePCG(const std::vector<bool>& is_load,
 // This gives Jacobi-like convergence in O(1) iterations.
 // alpha scales the preconditioned step (1.0 = full Jacobi step).
 // ---------------------------------------------------------------------------
-void Simulation::gradientStep(float alpha) {
+void Simulation::gradientStep(float alpha, bool update_pos) {
   int N = (int)particles.size();
   float dt = simCfg.dt;
   float pi_f = glm::pi<float>();
 
   // ---- Build diagonal preconditioner ----
+  // fixed particles (support points): position pinned, rotation FREE (pin/roller support).
+  // This simulates simply-supported conditions: rotation at supports can adapt to the beam.
   std::vector<float> h_p(N, 0.0f);
   std::vector<float> h_q(N, 0.0f);
   for (int i = 0; i < N; i++) {
-    if (particles[i].fixed) continue;
+    if (particles[i].fixed) continue;  // fixed particles get h_p from bonds only
     float m  = particles[i].mass;
     float r  = particles[i].radius;
     float Iq = (8.0f / 5.0f) * m * r * r;
     h_p[i] = m  / (dt * dt);
-    h_q[i] = Iq / (dt * dt);
+    h_q[i] = Iq / (dt * dt);  // inertia; fixed particles start at 0
   }
   for (const auto& b : bonds) {
     if (b.broken) continue;
@@ -240,17 +254,21 @@ void Simulation::gradientStep(float alpha) {
     float kt  = G * S / b.l0;
     float I   = pi_f * r0 * r0 * r0 * r0 / 4.0f;
     float EIl = simCfg.E * I / b.l0;
-    // Shear angular stiffness: V_shear = 0.5*kt*l0^2*theta^2 -> d^2V/dq^2 ~ kt*l0^2
     float kt_ang = kt * b.l0 * b.l0;  // [Nm/rad]
-    if (!particles[b.i].fixed) { h_p[b.i] += kn + kt; h_q[b.i] += EIl + kt_ang; }
-    if (!particles[b.j].fixed) { h_p[b.j] += kn + kt; h_q[b.j] += EIl + kt_ang; }
+    // Position preconditioner: only stretch (shear has no position gradient)
+    if (!particles[b.i].fixed) h_p[b.i] += kn;
+    if (!particles[b.j].fixed) h_p[b.j] += kn;
+    // Rotation preconditioner: ALL particles (including fixed) can rotate
+    h_q[b.i] += EIl + kt_ang;
+    h_q[b.j] += EIl + kt_ang;
   }
 
   // ---- Accumulate gradients ----
   std::vector<glm::vec3> grad_p(N, glm::vec3(0.0f));
   std::vector<glm::vec4> grad_q(N, glm::vec4(0.0f));
 
-  // Inertia terms: (m/dt^2)*(p - p_hat) and (Iq/dt^2)*(q - q_hat)
+  // Inertia terms: only for non-fixed particles (fixed have no positional inertia;
+  // rotation inertia is also zeroed for fixed so supports are quasi-static in rotation)
   for (int i = 0; i < N; i++) {
     if (particles[i].fixed) continue;
     float m  = particles[i].mass;
@@ -265,20 +283,19 @@ void Simulation::gradientStep(float alpha) {
     grad_q[i] += (Iq / (dt * dt)) * (q_curr - q_hat_v);
   }
 
-  // Bond energy gradients
+  // Bond energy gradients (ALL particles, including fixed, contribute rotation gradient)
   for (const auto& b : bonds) {
     if (b.broken) continue;
     BondGradient bg = bondGradient(particles[b.i], particles[b.j],
                                    b, simCfg.E, simCfg.nu);
-    grad_p[b.i] += bg.grad_pi;
-    grad_p[b.j] += bg.grad_pj;
-    grad_q[b.i] += bg.grad_qi;
+    if (!particles[b.i].fixed) grad_p[b.i] += bg.grad_pi;
+    if (!particles[b.j].fixed) grad_p[b.j] += bg.grad_pj;
+    grad_q[b.i] += bg.grad_qi;  // rotation gradient for ALL particles
     grad_q[b.j] += bg.grad_qj;
   }
 
-  // Project q gradients onto tangent space of S3 at each quaternion
+  // Project q gradients onto tangent space of S3 (ALL particles including fixed)
   for (int i = 0; i < N; i++) {
-    if (particles[i].fixed) continue;
     glm::vec4 q(particles[i].rot.x, particles[i].rot.y,
                 particles[i].rot.z, particles[i].rot.w);
     grad_q[i] -= glm::dot(q, grad_q[i]) * q;  // (I - q*q^T) * grad_q
@@ -286,14 +303,16 @@ void Simulation::gradientStep(float alpha) {
 
   // ---- Apply preconditioned updates ----
   for (int i = 0; i < N; i++) {
-    if (particles[i].fixed) continue;
+    // Position update: only non-fixed particles (skip if update_pos=false)
+    if (update_pos && !particles[i].fixed && h_p[i] > 1e-30f) {
+      particles[i].pos -= (alpha / h_p[i]) * grad_p[i];
+    }
 
-    // Position: p -= alpha * grad_p / h_p[i]
-    particles[i].pos -= (alpha / h_p[i]) * grad_p[i];
-
-    // Orientation: geodesic step on S3 with preconditioned tangent
-    glm::vec4 tang = -(alpha / h_q[i]) * grad_q[i];
-    particles[i].rot = manifoldStep(particles[i].rot, tang, 1.0f);
+    // Rotation update: ALL particles (including fixed/support) — simply-supported BC
+    if (h_q[i] > 1e-30f) {
+      glm::vec4 tang = -(alpha / h_q[i]) * grad_q[i];
+      particles[i].rot = manifoldStep(particles[i].rot, tang, 1.0f);
+    }
   }
 }
 
@@ -323,9 +342,57 @@ int Simulation::checkFracture() {
     }
   }
   (void)maxTauBond;
-  if (frame <= 15) {
-    std::printf("[sc%d frame%3d] maxSigma=%.3e maxTau=%.3e broken=%d\n",
-      scaleIdx, frame, maxSigma, maxTau, count);
+  if (frame <= 35 && frame % 5 == 0) {
+    // Find max-sigma bottom bond (y < H*0.1) and decompose sigma_n vs sigma_m
+    const float H = beamCfg.H;
+    float pi_f = glm::pi<float>();
+    int   topBond = -1;
+    float topSig  = 0.0f;
+    for (int bi = 0; bi < (int)bonds.size(); bi++) {
+      const auto& b2 = bonds[bi];
+      if (b2.broken) continue;
+      if (particles[b2.i].isLoad || particles[b2.j].isLoad) continue;
+      if (particles[b2.i].fixed || particles[b2.j].fixed)   continue;
+      float by2 = 0.5f*(particles[b2.i].pos.y + particles[b2.j].pos.y);
+      if (by2 > H * 0.5f) continue;
+      float sig2 = 0.0f, t2 = 0.0f;
+      bondStress(particles[b2.i], particles[b2.j], b2, simCfg.E, simCfg.nu, sig2, t2);
+      if (sig2 > topSig) { topSig = sig2; topBond = bi; }
+    }
+    // Decompose sigma_n vs sigma_m for the max-sigma bond
+    float sn = 0.0f, sm = 0.0f;
+    float bx = 0.0f, by = 0.0f;
+    if (topBond >= 0) {
+      const auto& b2 = bonds[topBond];
+      float r0 = (particles[b2.i].radius + particles[b2.j].radius) * 0.5f;
+      float S  = pi_f * r0 * r0;
+      float I  = pi_f * r0*r0*r0*r0 / 4.0f;
+      float kn = simCfg.E * S / b2.l0;
+      glm::vec3 dv = particles[b2.j].pos - particles[b2.i].pos;
+      float dist = glm::length(dv);
+      float delta = dist - b2.l0;
+      float Fn_t = std::max(0.0f, kn * delta);
+      sn = Fn_t / S;
+      // Mb from bend-twist
+      glm::mat3 R0 = glm::mat3_cast(b2.q0);
+      glm::vec4 qi_v(particles[b2.i].rot.x, particles[b2.i].rot.y,
+                     particles[b2.i].rot.z, particles[b2.i].rot.w);
+      // Gl(qj) * qi_v
+      const glm::quat& qj = particles[b2.j].rot;
+      float qx=qj.x, qy=qj.y, qz=qj.z, qw=qj.w;
+      glm::vec3 Glqj_qi(
+         qw*qi_v.x + qz*qi_v.y - qy*qi_v.z - qx*qi_v.w,
+        -qz*qi_v.x + qw*qi_v.y + qx*qi_v.z - qy*qi_v.w,
+         qy*qi_v.x - qx*qi_v.y + qw*qi_v.z - qz*qi_v.w);
+      glm::vec3 t2v = R0 * Glqj_qi;
+      float Kb = simCfg.E * I / b2.l0;
+      float Mb = std::sqrt(Kb*t2v[1]*Kb*t2v[1] + Kb*t2v[2]*Kb*t2v[2]);
+      sm = Mb * r0 / I;
+      bx = 0.5f*(particles[b2.i].pos.x + particles[b2.j].pos.x);
+      by = 0.5f*(particles[b2.i].pos.y + particles[b2.j].pos.y);
+    }
+    std::printf("[sc%d fr%3d] maxSig=%.3e @(%.3f,%.4f) sn=%.3e sm=%.3e broken=%d\n",
+      scaleIdx, frame, topSig, bx, by, sn, sm, count);
   }
   return count;
 }
@@ -338,29 +405,14 @@ void Simulation::step() {
   int   N  = (int)particles.size();
   float dt = simCfg.dt;
 
-  // ---- 1. Predict: x_hat = x + v*dt, q_hat = geodesic step ----
+  // ---- 1. Predict: quasi-static (no velocity warm-start) ----
+  // p_hat = current position.  Each frame finds the static equilibrium under
+  // the new load increment.  With dt=1e-3 (large), m/dt^2 << kn so the
+  // inertia term is a weak regularizer and x* ≈ argmin V(x) (quasi-static).
+  // No velocity warm-start avoids dynamic oscillations across frames.
   for (int i = 0; i < N; i++) {
-    if (particles[i].fixed) {
-      p_hat[i] = particles[i].pos;
-      q_hat[i] = particles[i].rot;
-      continue;
-    }
-
-    // Predicted position
-    p_hat[i] = particles[i].pos + particles[i].vel * dt;
-
-    // Predicted orientation via quaternion integration:
-    // dq/dt = 0.5 * [angVel, 0] * q   (in pure-quaternion left-multiplication)
-    glm::quat w_quat(0.0f,
-                     particles[i].angVel.x * 0.5f,
-                     particles[i].angVel.y * 0.5f,
-                     particles[i].angVel.z * 0.5f);
-    glm::quat q_dot = w_quat * particles[i].rot;
-    glm::quat q_new(particles[i].rot.w + q_dot.w * dt,
-                    particles[i].rot.x + q_dot.x * dt,
-                    particles[i].rot.y + q_dot.y * dt,
-                    particles[i].rot.z + q_dot.z * dt);
-    q_hat[i] = glm::normalize(q_new);
+    p_hat[i] = particles[i].pos;
+    q_hat[i] = particles[i].rot;
   }
 
   // ---- 2. Apply load displacement: move load particles downward each frame ----
@@ -388,68 +440,35 @@ void Simulation::step() {
     particles[i].rot = q_hat[i];
   }
 
-  // ---- 4. Block coordinate descent: alternate PCG (positions) and Jacobi (rotations) ----
-  // After each PCG block, rotations change, so positions must be re-solved.
-  // After each Jacobi block, positions are re-solved. Repeat until joint convergence.
-  const int outerLoops = 5;
-  const int innerPCG   = std::max(1, simCfg.maxIter / outerLoops);
-  const int innerJac   = 20;  // rotation Jacobi converges fast (rho_rot ~ 0.07)
+  // ---- 4. Solve positions + rotations with outer alternating loop ----
+  // V_shear = (1/2)*kt*l0^2*angle(d_actual, qc⊙d0)^2 couples positions and orientations.
+  // Block coordinate descent: alternate PCG for positions (stretch+shear) and
+  // gradient descent for rotations (shear+bend-twist) until convergence.
+  // Outer loop: 10 alternating iterations. Each iteration:
+  //   (a) PCG for positions (with current orientations providing shear forces)
+  //   (b) Rotation gradient descent (with current positions providing shear torques)
+  int outerIters = simCfg.maxIter;  // typically 10
+  int pcgPerOuter = 20;
+  int rotPerOuter = 20;
 
-  std::vector<glm::vec3> pos_save(N);
-
-  for (int outer = 0; outer < outerLoops; ++outer) {
-    // -- PCG: optimise positions with current rotations --
-    solvePCG(is_load, load_target, innerPCG, simCfg.epsilon);
-
-    // Enforce boundary conditions after PCG
+  for (int outer = 0; outer < outerIters; ++outer) {
+    // (a) PCG for positions — fixed orientations, solve positions
+    solvePCG(is_load, load_target, pcgPerOuter, simCfg.epsilon);
+    // Enforce position BCs after each PCG call
     for (int i = 0; i < N; i++) {
-      if (particles[i].fixed) {
-        particles[i].pos = p_hat[i];
-        particles[i].rot = q_hat[i];
-      }
-      if (is_load[i]) particles[i].pos = load_target[i];
+      if (particles[i].fixed) particles[i].pos = p_hat[i];
+      if (is_load[i])         particles[i].pos = load_target[i];
     }
 
-    // -- Jacobi: optimise rotations with current positions (save/restore positions) --
-    for (int i = 0; i < N; i++) pos_save[i] = particles[i].pos;
-
-    for (int iter = 0; iter < innerJac; ++iter) {
-      gradientStep(1.0f);
-      // Restore positions, keep rotation updates
-      for (int i = 0; i < N; i++) particles[i].pos = pos_save[i];
-      for (int i = 0; i < N; i++) {
-        if (particles[i].fixed) particles[i].rot = q_hat[i];
-      }
+    // (b) Gradient descent for rotations — fixed positions, update rotations
+    for (int r = 0; r < rotPerOuter; ++r) {
+      gradientStep(1.0f, false);  // false = skip position update
     }
   }
 
-  // ---- 5. Update velocities from position change ----
-  for (int i = 0; i < N; i++) {
-    if (particles[i].fixed) {
-      particles[i].vel    = glm::vec3(0.0f);
-      particles[i].angVel = glm::vec3(0.0f);
-      continue;
-    }
-    particles[i].vel = (particles[i].pos - p_hat[i]) / dt + particles[i].vel;
-    // Approximate angular velocity from quaternion change
-    // omega ~ 2 * q_dot * q_conj where q_dot ~ (q_new - q_hat) / dt
-    glm::quat dq_quat(
-      (particles[i].rot.w - q_hat[i].w) / dt,
-      (particles[i].rot.x - q_hat[i].x) / dt,
-      (particles[i].rot.y - q_hat[i].y) / dt,
-      (particles[i].rot.z - q_hat[i].z) / dt
-    );
-    glm::quat q_conj(
-       particles[i].rot.w,
-      -particles[i].rot.x,
-      -particles[i].rot.y,
-      -particles[i].rot.z
-    );
-    glm::quat omega_quat = dq_quat * q_conj;
-    particles[i].angVel = glm::vec3(2.0f * omega_quat.x,
-                                    2.0f * omega_quat.y,
-                                    2.0f * omega_quat.z);
-  }
+  // ---- 5. No velocity update (quasi-static: no inertia accumulation) ----
+  // Velocities stay at zero; p_hat = p_n each step so the solver always finds
+  // the static equilibrium under the current load, not a dynamic trajectory.
 
   // ---- 6. Check fracture ----
   int broken = checkFracture();

@@ -180,7 +180,11 @@ std::vector<Bond> generateBonds(
 
 void tagBoundaryParticles(std::vector<Particle>& particles, const BeamConfig& cfg) {
   const float r            = cfg.r;
-  const float searchRadius = 3.0f * r; // sphere around the ideal support/load point
+  // searchRadius scales as sqrt(r) so that N_load * kn is scale-independent.
+  // With kn ∝ r and N_load ∝ R²/r², N_load*kn ∝ R²/r. Setting R = C*sqrt(r) gives
+  // N_load*kn ∝ C² = const. Use r_Low = 0.018 as the reference so Low is unchanged.
+  const float r_ref        = 0.018f;
+  const float searchRadius = 3.0f * std::sqrt(r * r_ref);
 
   // Ideal positions for the three-point bending setup
   const glm::vec2 supp1XZ(0.10f * cfg.L, 0.5f * cfg.W); // left  support in XZ
