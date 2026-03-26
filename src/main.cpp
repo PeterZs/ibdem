@@ -24,6 +24,9 @@
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
 #include "Particle.h"
 #include "Bond.h"
@@ -76,8 +79,37 @@ static const SimConfig SIM_CFG[NUM_SCALES] = {
 // Simulation objects and control state
 // ---------------------------------------------------------------------------
 static Simulation g_sims[NUM_SCALES];
-static bool       g_running   = false;
-static bool       g_stepOnce  = false;
+
+// Simulation is driven from a background thread so that the GLUT event loop
+// (and thus OpenGL redraws) is never blocked by a long step() call.
+static std::atomic<bool> g_running   {false};
+static std::atomic<bool> g_stepOnce  {false};
+static std::atomic<bool> g_simAlive  {false};  // controls the sim thread loop
+static std::atomic<bool> g_wantRedraw{false};  // sim thread signals need for redraw
+static std::thread       g_simThread;
+
+// ---------------------------------------------------------------------------
+// Simulation thread: steps all scales, then signals redraw.
+// Reads g_running / g_stepOnce set by the GLUT keyboard callback.
+// Particle positions are read concurrently by display(); on x86-64 aligned
+// float reads are effectively atomic so no torn-value crash occurs.
+// ---------------------------------------------------------------------------
+static void simLoop() {
+  while (g_simAlive.load()) {
+    if (g_running.load()) {
+      for (int i = 0; i < NUM_SCALES; i++)
+        g_sims[i].step();
+      g_wantRedraw.store(true);
+    } else if (g_stepOnce.load()) {
+      for (int i = 0; i < NUM_SCALES; i++)
+        g_sims[i].step();
+      g_stepOnce.store(false);
+      g_wantRedraw.store(true);
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helper: draw a null-terminated C string at the current raster position
@@ -298,11 +330,12 @@ static void reshape(int w, int h) {
 }
 
 static void resetAll() {
-  for (int i = 0; i < NUM_SCALES; i++) {
+  g_running.store(false);
+  g_stepOnce.store(false);
+  // Brief wait so the sim thread finishes its current step before we reinit.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  for (int i = 0; i < NUM_SCALES; i++)
     g_sims[i].init(SCALE_CFG[i], SIM_CFG[i], i);
-  }
-  g_running  = false;
-  g_stepOnce = false;
 }
 
 static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
@@ -310,14 +343,15 @@ static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
     case 27:   // ESC
     case 'q':
     case 'Q':
+      g_simAlive.store(false);
       std::exit(0);
       break;
     case ' ':
-      g_running = !g_running;
+      g_running.store(!g_running.load());
       break;
     case 'n':
     case 'N':
-      g_stepOnce = true;
+      g_stepOnce.store(true);
       break;
     case 'r':
     case 'R':
@@ -329,18 +363,11 @@ static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
   }
 }
 
-// Timer fires ~60fps; advances simulation when running
+// Timer fires ~60fps; triggers redisplay and forwards sim-thread redraw requests.
+// Simulation is no longer stepped here — it runs in simLoop() on g_simThread.
 static void timerFunc(int val) {
-  if (g_running) {
-    for (int i = 0; i < NUM_SCALES; i++)
-      g_sims[i].step();
+  if (g_wantRedraw.exchange(false))
     glutPostRedisplay();
-  } else if (g_stepOnce) {
-    for (int i = 0; i < NUM_SCALES; i++)
-      g_sims[i].step();
-    g_stepOnce = false;
-    glutPostRedisplay();
-  }
   glutTimerFunc(16, timerFunc, val);
 }
 
@@ -409,6 +436,15 @@ int main(int argc, char** argv) {
 
   initSimulations();
 
+  // Start the simulation thread before entering the GLUT event loop.
+  // The thread runs simLoop() which steps all scales when g_running is true.
+  g_simAlive.store(true);
+  g_simThread = std::thread(simLoop);
+
   glutMainLoop();
+
+  // Reached only if GLUT returns (e.g. freeglut with GLUT_ACTION_CONTINUE_EXECUTION).
+  g_simAlive.store(false);
+  if (g_simThread.joinable()) g_simThread.join();
   return 0;
 }
