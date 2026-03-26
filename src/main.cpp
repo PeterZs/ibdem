@@ -263,31 +263,8 @@ static void drawScale(int index) {
   glDisable(GL_POINT_SMOOTH);
   glPointSize(1.0f);
 
-  // -----------------------------------------------------------------------
-  // Labels and legend
-  // -----------------------------------------------------------------------
-  // Scale label: top-left of viewport
-  glColor3f(0.95f, 0.95f, 0.95f);
-  float labelX = xMin + xRange * 0.02f;
-  float labelY = yMax - (yMax - yMin) * 0.04f;  // near top, small margin
-  glRasterPos2f(labelX, labelY);
-
-  char buf[128];
-  if (sim.fractureFrame >= 0) {
-    std::snprintf(buf, sizeof(buf), "%s (%d p, %d b) Frame:%d [FRACTURE@%d]",
-      cfg.label,
-      (int)sim.particles.size(),
-      (int)sim.bonds.size(),
-      sim.frame,
-      sim.fractureFrame);
-  } else {
-    std::snprintf(buf, sizeof(buf), "%s (%d particles, %d bonds)  Frame: %d",
-      cfg.label,
-      (int)sim.particles.size(),
-      (int)sim.bonds.size(),
-      sim.frame);
-  }
-  drawString(buf);
+  // (Per-scale labels are drawn in the full-window overlay to avoid overlapping
+  //  with the window title text. See display() overlay section.)
 
   // Legend: bottom-left corner, only for the first viewport to avoid clutter
   if (index == 0) {
@@ -382,12 +359,32 @@ static void display() {
   glEnd();
   glLineWidth(1.0f);
 
-  // Window title text (top centre)
+  // Row 1 (top): window title centred
   glColor3f(1.0f, 1.0f, 1.0f);
-  glRasterPos2f(WIN_W * 0.5f - 200.0f, WIN_H - 18.0f);
+  glRasterPos2f(WIN_W * 0.5f - 200.0f, WIN_H - 16.0f);
   drawString("Implicit BDEM -- Three-Point Bending Scale Consistency (Fig. 5)");
 
-  // Controls hint (bottom centre of full window, pixel coords)
+  // Row 2: per-scale info (one label per viewport column, below the title)
+  {
+    char buf[128];
+    for (int i = 0; i < NUM_SCALES; i++) {
+      const Simulation& sim = g_sims[i];
+      const BeamConfig& cfg = SCALE_CFG[i];
+      glColor3f(0.85f, 0.92f, 0.85f);
+      glRasterPos2f((float)(i * VP_W) + 6.0f, WIN_H - 30.0f);
+      if (sim.fractureFrame >= 0) {
+        std::snprintf(buf, sizeof(buf), "%s  %dp %db  fr:%d  [FRACTURE@%d]",
+          cfg.label, (int)sim.particles.size(), (int)sim.bonds.size(),
+          sim.frame, sim.fractureFrame);
+      } else {
+        std::snprintf(buf, sizeof(buf), "%s  %dp %db  fr:%d",
+          cfg.label, (int)sim.particles.size(), (int)sim.bonds.size(), sim.frame);
+      }
+      drawString(buf);
+    }
+  }
+
+  // Controls hint (bottom centre)
   glColor3f(0.65f, 0.65f, 0.65f);
   glRasterPos2f(WIN_W * 0.5f - 170.0f, 4.0f);
   drawString("SPACE=start/pause  N=step  R=reset  S=screenshot  Q/ESC=quit");
@@ -437,6 +434,8 @@ static void keyboard(unsigned char key, int /*x*/, int /*y*/) {
       break;
     case ' ':
       g_running = !g_running;
+      std::printf("[SPACE] %s  (frame %d)\n",
+        g_running ? "RUNNING" : "PAUSED", g_sims[0].frame);
       break;
     case 'n':
     case 'N':
@@ -472,10 +471,23 @@ static void idleFunc() {
   if (g_running) {
     for (int i = 0; i < NUM_SCALES; i++)
       g_sims[i].step();
+    // Print status every 10 frames so the user can see progress in the console.
+    // Frame = simulation step count; load displacement = loadVel * dt * frame.
+    if (g_sims[0].frame % 10 == 0) {
+      std::printf("  frame %3d", g_sims[0].frame);
+      for (int i = 0; i < NUM_SCALES; i++) {
+        if (g_sims[i].fractureFrame >= 0)
+          std::printf("  [%s: FRACTURED@%d]", SCALE_CFG[i].label, g_sims[i].fractureFrame);
+      }
+      std::printf("\n");
+      std::fflush(stdout);
+    }
     glutPostRedisplay();
   } else if (g_stepOnce) {
     for (int i = 0; i < NUM_SCALES; i++)
       g_sims[i].step();
+    std::printf("  step -> frame %d\n", g_sims[0].frame);
+    std::fflush(stdout);
     g_stepOnce = false;
     glutPostRedisplay();
   }
