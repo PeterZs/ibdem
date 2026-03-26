@@ -1,6 +1,6 @@
 # 作業ログ — ibdem (Fig. 5 再現)
 
-## 最終更新: 2026-03-21
+## 最終更新: 2026-03-26
 
 ---
 
@@ -73,6 +73,16 @@ Scale High    : fracture at frame 24  (target 25) ✓
 | 外側交互ループ (block coordinate descent) 追加 | Simulation.cpp | 位置と向きを交互に最適化 |
 | per-scale Δt 導入 | main.cpp | 全スケール同フレーム破断を達成 |
 | 診断 printf を削除 | Simulation.cpp | リリース品質のクリーンな出力 |
+| `g_running = true` (自動開始) + idle callback 追加 | main.cpp | ウィンドウを開いた直後にシミュレーション開始 |
+| BMP 垂直フリップを除去 | main.cpp | capture_fr*.bmp が正しく上向きで保存されるようになった |
+| ビューポートをビーム集中型に変更 | main.cpp | 梁が縦 54px→225px、破断の隙間が視認可能になった |
+| `checkFracture()` 全ボンドの `b.sigma` を更新 (破断は下半分のみ) | Simulation.cpp | 全断面でボンドの応力色が正しく表示されるようになった |
+| テキスト重複修正: per-scale ラベルを overlay に移動 | main.cpp | タイトルとラベルが重ならなくなった |
+| コンソールログ追加 (SPACE/N キー、10 フレームごと) | main.cpp | GUI 操作のフィードバックが確認できるようになった |
+| `-capture [N]` モード実装 | main.cpp | 全フレームを BMP として自動保存、差分 BMP も生成 |
+| 凡例をワールド座標からスクリーン座標 (overlay) へ移動 | main.cpp | シミュレーション結果と重ならなくなった |
+| `make_gif.py` 新規作成 | make_gif.py | capture_fr*.bmp → animation.gif を自動生成 |
+| README.md / README.ja.md ティーザー GIF 追加 | README.md, README.ja.md | GitHub トップページにアニメーションが表示される |
 
 ---
 
@@ -80,12 +90,21 @@ Scale High    : fracture at frame 24  (target 25) ✓
 
 ```powershell
 # ビルド
-cmake --build C:\Users\nobuo\Documents\github\nnkgw\ibdem\build --config Release
+cmake --build build --config Release
 
-# 実行 (Windows Defender 回避)
-powershell -Command "Unblock-File 'C:\Users\nobuo\Documents\github\nnkgw\ibdem\build\Release\ibdem.exe'; Start-Process -FilePath 'C:\Users\nobuo\Documents\github\nnkgw\ibdem\build\Release\ibdem.exe' -ArgumentList '-headless 40' -Wait -RedirectStandardOutput 'C:\Users\nobuo\ibdem_out.txt' -NoNewWindow; Get-Content 'C:\Users\nobuo\ibdem_out.txt'"
-
-# GUI モード
-cd C:\Users\nobuo\Documents\github\nnkgw\ibdem\build\Release
+# GUI モード (自動でシミュレーション開始)
+cd bin
 .\ibdem.exe
+
+# Headless モード (ウィンドウなし、N フレーム実行)
+.\ibdem.exe -headless 80
+
+# Capture モード (全フレームを BMP として保存)
+.\ibdem.exe -capture 60
+# → capture_fr0001.bmp ... capture_fr0060.bmp
+# → diff/diff_fr0002.bmp ... (フレーム間差分 ×10)
+
+# アニメーション GIF 生成
+cd ..
+python make_gif.py bin --out animation.gif
 ```
