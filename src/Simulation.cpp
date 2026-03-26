@@ -329,14 +329,18 @@ int Simulation::checkFracture() {
     // Skip bonds directly adjacent to load/support particles (boundary artifacts)
     if (particles[b.i].isLoad || particles[b.j].isLoad) continue;
     if (particles[b.i].fixed || particles[b.j].fixed)   continue;
-    // Skip bonds in the top half of the beam (compression zone; fracture initiates at bottom)
-    if (particles[b.i].pos.y > beamCfg.H * 0.5f ||
-        particles[b.j].pos.y > beamCfg.H * 0.5f) continue;
     float sigma = 0.0f, tau = 0.0f;
     bondStress(particles[b.i], particles[b.j], b, simCfg.E, simCfg.nu, sigma, tau);
-    b.sigma = sigma;
+    b.sigma = sigma;  // update for ALL interior bonds — used for rendering color
     if (sigma > maxSigma) { maxSigma = sigma; }
     if (tau   > maxTau)   { maxTau   = tau;   maxTauBond = bi; }
+
+    // Fracture criterion applies to the bottom half only (tension zone).
+    // The bending-moment term in sigma is always positive, so without this guard
+    // the top-half compression zone fractures prematurely — particularly at fine
+    // scale (High r=0.005) where the numerical bending stress is large.
+    if (particles[b.i].pos.y > beamCfg.H * 0.5f ||
+        particles[b.j].pos.y > beamCfg.H * 0.5f) continue;
     if (sigma > simCfg.tauC || tau > simCfg.tauC) {
       b.broken = true;
       ++count;

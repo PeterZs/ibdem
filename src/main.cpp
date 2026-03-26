@@ -25,6 +25,13 @@
 #include <cstdio>
 #include <cstdint>
 #include <algorithm>
+#ifdef _WIN32
+  #include <direct.h>
+  static void ensureDir(const char* d) { _mkdir(d); }
+#else
+  #include <sys/stat.h>
+  static void ensureDir(const char* d) { mkdir(d, 0755); }
+#endif
 
 #include "Particle.h"
 #include "Bond.h"
@@ -80,19 +87,18 @@ static Simulation g_sims[NUM_SCALES];
 static bool g_running          = true;   // auto-start: simulation begins immediately
 static bool g_stepOnce         = false;
 static bool g_captureMode      = false;  // -capture: save every frame as BMP then exit
-static int  g_captureMaxFrames = 40;
+static int  g_captureMaxFrames = 60;
+static std::vector<uint8_t> g_prevPixels; // previous frame pixels for diff output
 
 // ---------------------------------------------------------------------------
-// BMP screenshot helper
+// BMP helpers
 // ---------------------------------------------------------------------------
-static void saveBMP(const char* path) {
-  int w = WIN_W, h = WIN_H;
-  std::vector<uint8_t> pixels((size_t)w * h * 3);
-  glReadPixels(0, 0, w, h, GL_BGR_EXT, GL_UNSIGNED_BYTE, pixels.data());
-  // No vertical flip needed: both OpenGL (glReadPixels) and BMP store rows
-  // bottom-first, so the data is already in the correct order for a BMP file.
 
-  // BMP row size must be aligned to 4 bytes
+// Write a BGR pixel buffer (w*h*3 bytes, bottom-row-first) to a BMP file.
+// Both glReadPixels and BMP use bottom-first row order, so no flip is needed.
+static void writeBMPFile(const char* path,
+                         const std::vector<uint8_t>& pixels,
+                         int w, int h) {
   int rowBytes = w * 3;
   int pad      = (4 - rowBytes % 4) % 4;
   int dataSize = (rowBytes + pad) * h;
@@ -102,26 +108,49 @@ static void saveBMP(const char* path) {
   hdr[0] = 'B'; hdr[1] = 'M';
   hdr[2] = (uint8_t)(fileSize      ); hdr[3]  = (uint8_t)(fileSize >> 8);
   hdr[4] = (uint8_t)(fileSize >> 16); hdr[5]  = (uint8_t)(fileSize >> 24);
-  hdr[10] = 54; // pixel data offset
-  hdr[14] = 40; // BITMAPINFOHEADER size
+  hdr[10] = 54;
+  hdr[14] = 40;
   hdr[18] = (uint8_t)(w      ); hdr[19] = (uint8_t)(w >> 8);
   hdr[20] = (uint8_t)(w >> 16); hdr[21] = (uint8_t)(w >> 24);
   hdr[22] = (uint8_t)(h      ); hdr[23] = (uint8_t)(h >> 8);
   hdr[24] = (uint8_t)(h >> 16); hdr[25] = (uint8_t)(h >> 24);
-  hdr[26] = 1;  // planes
-  hdr[28] = 24; // bits per pixel
+  hdr[26] = 1; hdr[28] = 24;
   hdr[34] = (uint8_t)(dataSize      ); hdr[35] = (uint8_t)(dataSize >> 8);
   hdr[36] = (uint8_t)(dataSize >> 16); hdr[37] = (uint8_t)(dataSize >> 24);
 
   FILE* f = std::fopen(path, "wb");
-  if (!f) { std::printf("saveBMP: cannot open %s\n", path); return; }
+  if (!f) { std::printf("writeBMPFile: cannot open %s\n", path); return; }
   std::fwrite(hdr, 1, 54, f);
   uint8_t padding[3] = {};
   for (int y = 0; y < h; y++) {
-    std::fwrite(pixels.data() + (size_t)y * w * 3, 1, (size_t)rowBytes, f);
+    std::fwrite(pixels.data() + (size_t)y * rowBytes, 1, (size_t)rowBytes, f);
     if (pad) std::fwrite(padding, 1, (size_t)pad, f);
   }
   std::fclose(f);
+}
+
+// Write an amplified per-channel absolute difference between curr and prev.
+// Each channel diff is multiplied by AMPLIFY and clamped to [0,255].
+// Unchanged pixels are black; changed pixels glow in the original color direction.
+static void writeDiffBMPFile(const char* path,
+                              const std::vector<uint8_t>& curr,
+                              const std::vector<uint8_t>& prev,
+                              int w, int h) {
+  static const int AMPLIFY = 10;
+  std::vector<uint8_t> diff(curr.size());
+  for (size_t i = 0; i < curr.size(); i++) {
+    int d = std::abs((int)curr[i] - (int)prev[i]) * AMPLIFY;
+    diff[i] = (uint8_t)std::min(d, 255);
+  }
+  writeBMPFile(path, diff, w, h);
+}
+
+// Take a screenshot from the current OpenGL back-buffer.
+static void saveBMP(const char* path) {
+  int w = WIN_W, h = WIN_H;
+  std::vector<uint8_t> pixels((size_t)w * h * 3);
+  glReadPixels(0, 0, w, h, GL_BGR_EXT, GL_UNSIGNED_BYTE, pixels.data());
+  writeBMPFile(path, pixels, w, h);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +171,11 @@ static void drawScale(int index) {
   // -- Viewport (left edge depends on column index) --
   glViewport(index * VP_W, 0, VP_W, VP_H);
 
-  // -- Orthographic projection that fits the beam with 5 % margin --
+  // -- Beam-focused orthographic projection --
+  // Vertical range is set to beam height + 50% margin on each side so the beam
+  // fills most of the viewport height, making individual bonds and fracture gaps
+  // clearly visible. (No square-pixel constraint; vertical scale is intentionally
+  // exaggerated for structural-mechanics visualization.)
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
 
@@ -151,19 +184,16 @@ static void drawScale(int index) {
   float xMax    =  cfg.L + xMargin;
   float xRange  = xMax - xMin;
 
-  // Preserve aspect ratio: compute yRange from viewport aspect
-  float aspect  = (float)VP_H / (float)VP_W;
-  float yRange  = xRange * aspect;
-  float yCentre = cfg.H * 0.5f;
+  float yMargin = cfg.H * 0.5f;   // half-beam-height margin above and below
+  float yMin    = -yMargin;
+  float yMax    =  cfg.H + yMargin;
 
-  glOrtho(xMin, xMax,
-          yCentre - yRange * 0.5f, yCentre + yRange * 0.5f,
-          -1.0f,  1.0f);
+  glOrtho(xMin, xMax, yMin, yMax, -1.0f, 1.0f);
 
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
 
-  // Pixels per world unit (used to scale point / line sizes)
+  // Pixels per world unit (horizontal; used to scale point / line sizes)
   float worldToPixel = (float)VP_W / xRange;
 
   // -- Background (per-viewport clear via scissor) --
@@ -236,10 +266,10 @@ static void drawScale(int index) {
   // -----------------------------------------------------------------------
   // Labels and legend
   // -----------------------------------------------------------------------
-  // Scale label: top-left of viewport (well below the window title bar)
+  // Scale label: top-left of viewport
   glColor3f(0.95f, 0.95f, 0.95f);
   float labelX = xMin + xRange * 0.02f;
-  float labelY = yCentre + yRange * 0.44f;  // near top, with a little margin
+  float labelY = yMax - (yMax - yMin) * 0.04f;  // near top, small margin
   glRasterPos2f(labelX, labelY);
 
   char buf[128];
@@ -262,9 +292,8 @@ static void drawScale(int index) {
   // Legend: bottom-left corner, only for the first viewport to avoid clutter
   if (index == 0) {
     float legX  = xMin + xRange * 0.02f;
-    // Start legend near the bottom, leaving a small margin
-    float legY0 = yCentre - yRange * 0.42f;   // bottom legend item Y
-    float legDy = yRange  * 0.05f;             // spacing between items
+    float legY0 = yMin + (yMax - yMin) * 0.05f;   // near bottom
+    float legDy = (yMax - yMin) * 0.05f;           // spacing between items
 
     glPointSize(8.0f);
 
@@ -364,10 +393,25 @@ static void display() {
   drawString("SPACE=start/pause  N=step  R=reset  S=screenshot  Q/ESC=quit");
 
   if (g_captureMode) {
-    char path[64];
+    int w = WIN_W, h = WIN_H;
+    std::vector<uint8_t> pixels((size_t)w * h * 3);
+    glReadPixels(0, 0, w, h, GL_BGR_EXT, GL_UNSIGNED_BYTE, pixels.data());
+
+    // Save current frame
+    char path[128];
     std::snprintf(path, sizeof(path), "capture_fr%04d.bmp", g_sims[0].frame);
-    saveBMP(path);
-    std::printf("Saved: %s\n", path);
+    writeBMPFile(path, pixels, w, h);
+    std::printf("Saved: %s", path);
+
+    // Save amplified diff against previous frame
+    if (!g_prevPixels.empty()) {
+      std::snprintf(path, sizeof(path), "diff/diff_fr%04d.bmp", g_sims[0].frame);
+      writeDiffBMPFile(path, pixels, g_prevPixels, w, h);
+      std::printf("  diff: %s", path);
+    }
+    std::printf("\n");
+
+    g_prevPixels = pixels;
   }
 
   glutSwapBuffers();
@@ -490,7 +534,7 @@ int main(int argc, char** argv) {
   for (int a = 1; a < argc; a++) {
     std::string arg(argv[a]);
     if (arg == "-headless" || arg == "--headless") {
-      int frames = (a + 1 < argc) ? std::atoi(argv[a + 1]) : 60;
+      int frames = (a + 1 < argc) ? std::atoi(argv[a + 1]) : 80;
       runHeadless(frames);
       return 0;
     }
@@ -498,6 +542,7 @@ int main(int argc, char** argv) {
       g_captureMode      = true;
       g_captureMaxFrames = (a + 1 < argc) ? std::atoi(argv[a + 1]) : 40;
       g_running          = false; // idle loop controls capture; g_running not used
+      ensureDir("diff");          // create diff/ output directory
     }
   }
 
