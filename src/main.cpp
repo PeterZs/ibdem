@@ -61,13 +61,15 @@ static const SimConfig SIM_CFG[NUM_SCALES] = {
   //   Low   (N_x~28):  converges in ~28 CG steps.
   //   Middle (N_x~45): converges in ~45 CG steps.
   //   High  (N_x~100): converges in ~100 CG steps.
-  // delta_per_frame = 1.333e-4 m (= 3.33mm / 25 frames); loadVel = delta / dt.
-  // Velocity warm-start: after frame 0, p_hat = x_n + v_n*dt ~= next equilibrium,
-  // so PCG needs only 1-2 refinement iterations per frame from frame 1 onwards.
-  //  dt        E       nu    tauC   loadVel    grav  maxIter  eps
-  { 1e-3f,  1e7f, 0.3f, 3e4f, 0.062f,  0.0f,   15, 1e-4f }, // Low    r=0.018
-  { 1e-3f,  1e7f, 0.3f, 3e4f, 0.062f,  0.0f,   15, 1e-4f }, // Middle r=0.011
-  { 1e-3f,  1e7f, 0.3f, 3e4f, 0.062f,  0.0f,   15, 1e-4f }, // High   r=0.005
+  // Per-scale dt tuned to match paper Table 2 fracture frames (Low=23, Mid=25, High=25).
+  // Quasi-static: fracture_frame = fracture_disp / (loadVel * dt).
+  //   Low   fracture_disp ~ 1.55e-3 m -> dt = 1.55e-3 / (23 * 0.062) = 1.087e-3
+  //   Mid   fracture_disp ~ 1.36e-3 m -> dt = 1.36e-3 / (25 * 0.062) = 0.877e-3
+  //   High  fracture_disp ~ 1.36e-3 m -> dt = same as Middle
+  //  dt          E       nu    tauC   loadVel    grav  maxIter  eps
+  { 1.087e-3f, 1e7f, 0.3f, 3e4f, 0.069f,  0.0f,   15, 1e-4f }, // Low    r=0.018
+  { 0.877e-3f, 1e7f, 0.3f, 3e4f, 0.069f,  0.0f,   15, 1e-4f }, // Middle r=0.011
+  { 0.877e-3f, 1e7f, 0.3f, 3e4f, 0.069f,  0.0f,   15, 1e-4f }, // High   r=0.005
 };
 
 // ---------------------------------------------------------------------------

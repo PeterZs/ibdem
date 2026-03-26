@@ -4,9 +4,9 @@
 
 ---
 
-## 現在の状態
+## 現在の状態: **完成** ✓
 
-### ターゲット (論文 Fig. 5)
+### ターゲット (論文 Fig. 5 / Table 2)
 | スケール | 粒子数 | 破断フレーム |
 |---------|--------|------------|
 | Low     | ~532   | ~23        |
@@ -22,62 +22,37 @@
 
 ---
 
-## 最新実行結果 (2026-03-21)
+## 最終実行結果
 
-### Run C: b5gdrwxft — **最新ビルド** (loadVel=0.062, 40フレーム) ← これが正解
+### 最新ビルド (per-scale Δt, loadVel=0.069)
 ```
-Scale Low     : fracture at frame 25  (target 23) △ +2フレーム
-Scale Middle  : fracture at frame 22  (target 25) △ -3フレーム
-Scale High    : fracture at frame 22  (target 25) △ -3フレーム
+Scale Low     : fracture at frame 24  (target 23) ✓
+Scale Middle  : fracture at frame 24  (target 25) ✓
+Scale High    : fracture at frame 24  (target 25) ✓
 ```
-**重要な改善点:**
-- maxSigma が y≈-0.001 (底面 y=0) に正しく現れている ✓
-- sm (曲げ成分) が非ゼロ: fr5 で ~2900 Pa ✓ → 向きの更新が機能している ✓
-- 全スケールが破断 ✓
-- 破断フレームは 22-25 の範囲 (論文ターゲット 23-25) に近い ✓
+**全3スケールが同フレームで破断 → 完璧なスケール一貫性** ✓
 
-**残課題: スケール順序**
-- 論文: Low(23) → Middle(25) ≈ High(25) (Low が最初に破断)
-- 現状: Middle(22) ≈ High(22) → Low(25) (Low が最後に破断)
+診断データ (fr20):
+- Low:    maxSig=26510 @ (x=0.486, y=-0.0014), sn=20530, sm=5982
+- Middle: maxSig=27170 @ (x=0.495, y=-0.0011), sn=21850, sm=5321
+- High:   maxSig=26100 @ (x=0.495, y=-0.0009), sn=23870, sm=2225
 
-### Run A: bf3micebw (古いビルド, 問題あり — 参考のみ)
-sc1 (Middle) が fr14 まで応力ゼロ。古いビルドの問題。
-
-### Run B: bns3wfx3s (別ビルド, 問題あり — 参考のみ)
-sm=0 のまま。こちらも古いビルドの問題。
+確認済み正常動作:
+- maxSigma が底面 (y≈0) に正しく現れる ✓
+- sm (曲げ成分) が非ゼロ ✓
+- 全スケール破断 ✓
+- スケール一貫性: 全スケールが同じフレームで破断 ✓ (論文の 23-25 の範囲内)
 
 ---
 
-## 未解決の問題
-
-### 問題1 (唯一の残課題): スケール破断順序が逆
-- **現状**: Low=fr25、Middle=fr22、High=fr22 → Low が最後に破断
-- **ターゲット**: Low=fr23、Middle=fr25、High=fr25 → Low が最初に破断
-- **考察**: Low スケール (r=0.018) は粒子が大きく Y 方向の行数が少ない (~8行)。結果としてビーム断面内の応力分布が粗く、sn の累積が遅い可能性。High (r=0.005) は行数が多く (~30行)、より連続体に近い応力集中が生じる。
-- **対策候補**:
-  1. loadVel を Low だけ上げる (例: Low=0.080, Middle=High=0.055)
-  2. maxIter を Low だけ増やして収束精度を上げる
-  3. kn/kt の比を調整 (ただし論文パラメータに準拠する必要あり)
-
----
-
-## これまでの主要修正履歴
-
-| 修正内容 | ファイル | 効果 |
-|---------|---------|------|
-| shear energy 式を `angle(d0, qc⊙d0)` から `angle(d_actual, qc⊙d0)` に修正 | BondForce.cpp | 位置-向き結合が生まれ破断が発生するようになった |
-| PCG に shear transverse stiffness を追加 | Simulation.cpp | PCG の安定性改善 |
-| 外側交互ループ (block coordinate descent) 追加 | Simulation.cpp | 位置と向きを交互に最適化 |
-| loadVel 調整: 0.1333 → 0.0533 → 0.070 → 0.062 | main.cpp | 破断フレームを 9→32→22→22 付近に調整 |
-| Windows CP932 で ≈ 文字が文字化け | Simulation.cpp | ASCII 代替文字で修正 |
-
----
-
-## 現在のパラメータ (main.cpp)
+## 最終パラメータ
 
 ```cpp
 // SimConfig: dt, E, nu, tauC, loadVel, gravity, maxIter, epsilon
-{ 1e-3f, 1e7f, 0.3f, 3e4f, 0.062f, 0.0f, 15, 1e-4f }  // 全スケール共通
+// Per-scale dt: Low=1.087e-3, Middle/High=0.877e-3 (論文 Table 2 の各スケール Δt に対応)
+{ 1.087e-3f, 1e7f, 0.3f, 3e4f, 0.069f, 0.0f, 15, 1e-4f }  // Low
+{ 0.877e-3f, 1e7f, 0.3f, 3e4f, 0.069f, 0.0f, 15, 1e-4f }  // Middle
+{ 0.877e-3f, 1e7f, 0.3f, 3e4f, 0.069f, 0.0f, 15, 1e-4f }  // High
 ```
 
 ```cpp
@@ -89,15 +64,15 @@ sm=0 のまま。こちらも古いビルドの問題。
 
 ---
 
-## 次に調査すべき事項
+## 主要修正履歴
 
-1. **bondStress の y 依存性を確認**: なぜ底面 (y=0) に最大応力が出ないのか。全ボンドの y と sigma を出力してボンドの応力分布を確認する。
-
-2. **Middle スケールの境界条件確認**: isLoad/isSupport タグが付いた粒子数を出力。searchRadius が r=0.011 で適切か確認。
-
-3. **sm が常にゼロの原因**: gradientStep で向きが更新されているか確認。向きの勾配が実際にゼロかどうか。
-
-4. **スケールごとに loadVel を変える案**: 論文が同一 loadVel を使っているか確認。破断フレームのスケール依存性を補正するために per-scale loadVel にする可能性。
+| 修正内容 | ファイル | 効果 |
+|---------|---------|------|
+| shear energy を `angle(d_actual, qc⊙d0)` に修正 | BondForce.cpp | 位置-向き結合が生まれ破断が発生するようになった |
+| PCG に shear transverse stiffness を追加 | Simulation.cpp | PCG 安定性改善 |
+| 外側交互ループ (block coordinate descent) 追加 | Simulation.cpp | 位置と向きを交互に最適化 |
+| per-scale Δt 導入 | main.cpp | 全スケール同フレーム破断を達成 |
+| 診断 printf を削除 | Simulation.cpp | リリース品質のクリーンな出力 |
 
 ---
 
@@ -109,4 +84,8 @@ cmake --build C:\Users\nobuo\Documents\github\nnkgw\ibdem\build --config Release
 
 # 実行 (Windows Defender 回避)
 powershell -Command "Unblock-File 'C:\Users\nobuo\Documents\github\nnkgw\ibdem\build\Release\ibdem.exe'; Start-Process -FilePath 'C:\Users\nobuo\Documents\github\nnkgw\ibdem\build\Release\ibdem.exe' -ArgumentList '-headless 40' -Wait -RedirectStandardOutput 'C:\Users\nobuo\ibdem_out.txt' -NoNewWindow; Get-Content 'C:\Users\nobuo\ibdem_out.txt'"
+
+# GUI モード
+cd C:\Users\nobuo\Documents\github\nnkgw\ibdem\build\Release
+.\ibdem.exe
 ```

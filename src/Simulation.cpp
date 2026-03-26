@@ -342,58 +342,6 @@ int Simulation::checkFracture() {
     }
   }
   (void)maxTauBond;
-  if (frame <= 35 && frame % 5 == 0) {
-    // Find max-sigma bottom bond (y < H*0.1) and decompose sigma_n vs sigma_m
-    const float H = beamCfg.H;
-    float pi_f = glm::pi<float>();
-    int   topBond = -1;
-    float topSig  = 0.0f;
-    for (int bi = 0; bi < (int)bonds.size(); bi++) {
-      const auto& b2 = bonds[bi];
-      if (b2.broken) continue;
-      if (particles[b2.i].isLoad || particles[b2.j].isLoad) continue;
-      if (particles[b2.i].fixed || particles[b2.j].fixed)   continue;
-      float by2 = 0.5f*(particles[b2.i].pos.y + particles[b2.j].pos.y);
-      if (by2 > H * 0.5f) continue;
-      float sig2 = 0.0f, t2 = 0.0f;
-      bondStress(particles[b2.i], particles[b2.j], b2, simCfg.E, simCfg.nu, sig2, t2);
-      if (sig2 > topSig) { topSig = sig2; topBond = bi; }
-    }
-    // Decompose sigma_n vs sigma_m for the max-sigma bond
-    float sn = 0.0f, sm = 0.0f;
-    float bx = 0.0f, by = 0.0f;
-    if (topBond >= 0) {
-      const auto& b2 = bonds[topBond];
-      float r0 = (particles[b2.i].radius + particles[b2.j].radius) * 0.5f;
-      float S  = pi_f * r0 * r0;
-      float I  = pi_f * r0*r0*r0*r0 / 4.0f;
-      float kn = simCfg.E * S / b2.l0;
-      glm::vec3 dv = particles[b2.j].pos - particles[b2.i].pos;
-      float dist = glm::length(dv);
-      float delta = dist - b2.l0;
-      float Fn_t = std::max(0.0f, kn * delta);
-      sn = Fn_t / S;
-      // Mb from bend-twist
-      glm::mat3 R0 = glm::mat3_cast(b2.q0);
-      glm::vec4 qi_v(particles[b2.i].rot.x, particles[b2.i].rot.y,
-                     particles[b2.i].rot.z, particles[b2.i].rot.w);
-      // Gl(qj) * qi_v
-      const glm::quat& qj = particles[b2.j].rot;
-      float qx=qj.x, qy=qj.y, qz=qj.z, qw=qj.w;
-      glm::vec3 Glqj_qi(
-         qw*qi_v.x + qz*qi_v.y - qy*qi_v.z - qx*qi_v.w,
-        -qz*qi_v.x + qw*qi_v.y + qx*qi_v.z - qy*qi_v.w,
-         qy*qi_v.x - qx*qi_v.y + qw*qi_v.z - qz*qi_v.w);
-      glm::vec3 t2v = R0 * Glqj_qi;
-      float Kb = simCfg.E * I / b2.l0;
-      float Mb = std::sqrt(Kb*t2v[1]*Kb*t2v[1] + Kb*t2v[2]*Kb*t2v[2]);
-      sm = Mb * r0 / I;
-      bx = 0.5f*(particles[b2.i].pos.x + particles[b2.j].pos.x);
-      by = 0.5f*(particles[b2.i].pos.y + particles[b2.j].pos.y);
-    }
-    std::printf("[sc%d fr%3d] maxSig=%.3e @(%.3f,%.4f) sn=%.3e sm=%.3e broken=%d\n",
-      scaleIdx, frame, topSig, bx, by, sn, sm, count);
-  }
   return count;
 }
 
